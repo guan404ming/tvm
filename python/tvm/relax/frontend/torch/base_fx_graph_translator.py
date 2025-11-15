@@ -2078,9 +2078,23 @@ class BaseFXGraphImporter(metaclass=abc.ABCMeta):
         )
 
     def _full_like(self, node: fx.Node) -> relax.Var:
+        import math
+        from tvm.runtime import DataType
+
         x = self.env[node.args[0]]
-        fill_value = relax.const(node.args[1])
-        return self.block_builder.emit(relax.op.full_like(x, fill_value))
+        value = node.args[1]
+        fill_value = relax.const(value)
+
+        # When filling with inf/-inf/nan, ensure we use a float dtype
+        # to avoid trying to cast these special values to integer types
+        x_dtype = x.struct_info.dtype
+        fill_dtype = None
+        if isinstance(value, (int, float)) and (math.isinf(value) or math.isnan(value)):
+            dtype_obj = DataType(x_dtype)
+            if not (dtype_obj.is_float() or dtype_obj.is_bfloat16()):
+                fill_dtype = "float32"
+
+        return self.block_builder.emit(relax.op.full_like(x, fill_value, dtype=fill_dtype))
 
     def _index_select(self, node: fx.Node) -> relax.Var:
         x = self.env[node.args[0]]
@@ -2089,11 +2103,29 @@ class BaseFXGraphImporter(metaclass=abc.ABCMeta):
         return self.block_builder.emit(relax.op.take(x, index, dim))
 
     def _inplace_masked_fill(self, node: fx.Node) -> relax.Var:
+        import math
+        from tvm.runtime import DataType
+
         x = self.env[node.args[0]]
         mask = self.env[node.args[1]]
         value = node.args[2]
         rx_value = relax.const(value)
-        values = self.block_builder.emit(relax.op.full_like(x, rx_value))
+
+        # When filling with inf/-inf/nan, ensure we use a float dtype
+        # to avoid trying to cast these special values to integer types
+        x_dtype = x.struct_info.dtype
+        fill_dtype = None
+        if isinstance(value, (int, float)) and (math.isinf(value) or math.isnan(value)):
+            dtype_obj = DataType(x_dtype)
+            if not (dtype_obj.is_float() or dtype_obj.is_bfloat16()):
+                fill_dtype = "float32"
+
+        values = self.block_builder.emit(relax.op.full_like(x, rx_value, dtype=fill_dtype))
+
+        # Cast x to match values dtype if necessary
+        if fill_dtype is not None:
+            x = self.block_builder.emit(relax.op.astype(x, fill_dtype))
+
         output = self.block_builder.emit(relax.op.where(mask, values, x))
         self.env[node.args[0]] = output
         return output
@@ -2122,10 +2154,29 @@ class BaseFXGraphImporter(metaclass=abc.ABCMeta):
         )
 
     def _masked_fill(self, node: fx.Node) -> relax.Var:
+        import math
+        from tvm.runtime import DataType
+
         x = self.env[node.args[0]]
         mask = self.env[node.args[1]]
-        rx_value = relax.const(node.args[2])
-        values = self.block_builder.emit(relax.op.full_like(x, rx_value))
+        value = node.args[2]
+        rx_value = relax.const(value)
+
+        # When filling with inf/-inf/nan, ensure we use a float dtype
+        # to avoid trying to cast these special values to integer types
+        x_dtype = x.struct_info.dtype
+        fill_dtype = None
+        if isinstance(value, (int, float)) and (math.isinf(value) or math.isnan(value)):
+            dtype_obj = DataType(x_dtype)
+            if not (dtype_obj.is_float() or dtype_obj.is_bfloat16()):
+                fill_dtype = "float32"
+
+        values = self.block_builder.emit(relax.op.full_like(x, rx_value, dtype=fill_dtype))
+
+        # Cast x to match values dtype if necessary
+        if fill_dtype is not None:
+            x = self.block_builder.emit(relax.op.astype(x, fill_dtype))
+
         return self.block_builder.emit(relax.op.where(mask, values, x))
 
     def _new_ones(self, node: fx.Node) -> relax.Var:
