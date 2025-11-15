@@ -57,6 +57,16 @@ def full(shape, dtype, fill_value):
     y : tvm.te.Tensor
         The result.
     """
+    import math
+
+    # Validate that inf/-inf/nan values are only used with float dtypes
+    if isinstance(fill_value, (int, float)) and (math.isinf(fill_value) or math.isnan(fill_value)):
+        if not ("float" in dtype or "bfloat16" in dtype):
+            raise ValueError(
+                f"Cannot create tensor with fill_value={fill_value} and dtype={dtype}. "
+                f"Infinite and NaN values require a floating-point dtype."
+            )
+
     return cpp.full(shape, dtype, fill_value)
 
 
