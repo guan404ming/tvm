@@ -2902,6 +2902,39 @@ def test_unique(axis: Optional[int], sorted: int):
     check_correctness(model)
 
 
+@pytest.mark.parametrize("axis", [None, 0])
+@pytest.mark.parametrize("sorted", [0, 1])
+@pytest.mark.parametrize("num_outputs", [2, 3, 4])
+def test_unique_with_optional_outputs(axis: Optional[int], sorted: int, num_outputs: int):
+    input_shape = [8, 8]
+    if axis is None:
+        output_shape = [-1]
+    else:
+        output_shape = [8, 8]
+        output_shape[axis] = -1
+
+    output_names = ["y", "indices", "inverse_indices", "counts"][:num_outputs]
+    unique_node = helper.make_node("Unique", ["x"], output_names, axis=axis, sorted=sorted)
+
+    outputs = [helper.make_tensor_value_info("y", TensorProto.FLOAT, output_shape)]
+    if num_outputs > 1:
+        outputs.append(helper.make_tensor_value_info("indices", TensorProto.INT64, output_shape))
+    if num_outputs > 2:
+        inverse_shape = [-1] if axis is None else input_shape
+        outputs.append(helper.make_tensor_value_info("inverse_indices", TensorProto.INT64, inverse_shape))
+    if num_outputs > 3:
+        outputs.append(helper.make_tensor_value_info("counts", TensorProto.INT64, output_shape))
+
+    graph = helper.make_graph(
+        [unique_node],
+        "unique_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, input_shape)],
+        outputs=outputs,
+    )
+    model = helper.make_model(graph, producer_name="unique_test")
+    check_correctness(model)
+
+
 @pytest.mark.parametrize("shape", [(), (1,), (2, 3), (4, 5, 6), (7, 8, 9, 10)])
 def test_nonzero(shape):
     verify_unary("NonZero", shape, input_dtype=TensorProto.BOOL, output_dtype=TensorProto.INT64)

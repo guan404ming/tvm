@@ -3182,24 +3182,62 @@ class Unique(OnnxOpConverter):
     def _impl_v11(cls, bb, inputs, attr, params):
         data = inputs[0]
         axis = attr.get("axis", None)
-        sorted = bool(attr.get("sorted", 1))
-        # TODO(tvm-team): Add support for return_index, return_inverse, return_counts
-        unique = relax.op.unique(data, sorted=sorted, axis=axis)
+        sorted_flag = bool(attr.get("sorted", 1))
+        num_outputs = attr["tvm_custom"]["num_outputs"]
+
+        return_index = num_outputs > 1
+        return_inverse = num_outputs > 2
+        return_counts = num_outputs > 3
+
+        unique = relax.op.unique(
+            data,
+            sorted=sorted_flag,
+            return_index=return_index,
+            return_inverse=return_inverse,
+            return_counts=return_counts,
+            axis=axis
+        )
+
         unique_numbers = tir.Var("unique_numbers", "int64")
         input_shape = data.struct_info.shape
         dtype = data.struct_info.dtype
 
         if axis is None:
-            # flatten the input tensor
-            return bb.match_cast(unique, relax.TensorStructInfo((unique_numbers,), dtype))
+            output_shape = (unique_numbers,)
+        else:
+            axis = axis if axis >= 0 else len(input_shape) + axis
+            if axis < 0 or axis >= len(input_shape):
+                raise ValueError(f"Axis {axis} is out of bounds")
+            output_shape = [
+                input_shape[i] if i != axis else unique_numbers for i in range(len(input_shape))
+            ]
 
-        axis = axis if axis >= 0 else len(input_shape) + axis
-        if axis < 0 or axis >= len(input_shape):
-            raise ValueError(f"Axis {axis} is out of bounds")
-        output_shape = [
-            input_shape[i] if i != axis else unique_numbers for i in range(len(input_shape))
-        ]
-        return bb.match_cast(unique, relax.TensorStructInfo(output_shape, dtype))
+        if num_outputs == 1:
+            return bb.match_cast(unique, relax.TensorStructInfo(output_shape, dtype))
+
+        outputs = [bb.match_cast(unique[0], relax.TensorStructInfo(output_shape, dtype))]
+
+        if return_index:
+            index_shape = (unique_numbers,) if axis is None else output_shape
+            index_sinfo = relax.TensorStructInfo(index_shape, "int64")
+            outputs.append(bb.match_cast(unique[1], index_sinfo))
+
+        if return_inverse:
+            if axis is None:
+                inverse_shape = (tir.Var("inverse_numbers", "int64"),)
+            else:
+                inverse_shape = input_shape
+            idx = 2 if return_index else 1
+            inverse_sinfo = relax.TensorStructInfo(inverse_shape, "int64")
+            outputs.append(bb.match_cast(unique[idx], inverse_sinfo))
+
+        if return_counts:
+            count_shape = (unique_numbers,) if axis is None else output_shape
+            idx = (1 if return_index else 0) + (1 if return_inverse else 0) + 1
+            count_sinfo = relax.TensorStructInfo(count_shape, "int64")
+            outputs.append(bb.match_cast(unique[idx], count_sinfo))
+
+        return relax.Tuple(outputs)
 
 
 class NonZero(OnnxOpConverter):
