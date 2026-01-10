@@ -3218,7 +3218,7 @@ class Unique(OnnxOpConverter):
         outputs = [bb.match_cast(unique[0], relax.TensorStructInfo(output_shape, dtype))]
 
         if return_index:
-            index_shape = (unique_numbers,) if axis is None else output_shape
+            index_shape = (unique_numbers,)
             index_sinfo = relax.TensorStructInfo(index_shape, "int64")
             outputs.append(bb.match_cast(unique[1], index_sinfo))
 
@@ -3227,13 +3227,13 @@ class Unique(OnnxOpConverter):
                 inverse_shape = (tir.Var("inverse_numbers", "int64"),)
             else:
                 inverse_shape = input_shape
-            idx = 2 if return_index else 1
+            idx = 2
             inverse_sinfo = relax.TensorStructInfo(inverse_shape, "int64")
             outputs.append(bb.match_cast(unique[idx], inverse_sinfo))
 
         if return_counts:
-            count_shape = (unique_numbers,) if axis is None else output_shape
-            idx = (1 if return_index else 0) + (1 if return_inverse else 0) + 1
+            count_shape = (unique_numbers,)
+            idx = 3
             count_sinfo = relax.TensorStructInfo(count_shape, "int64")
             outputs.append(bb.match_cast(unique[idx], count_sinfo))
 

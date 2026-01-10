@@ -2898,12 +2898,12 @@ def test_unique(axis: Optional[int], sorted: int, num_outputs: int):
 
     outputs = [helper.make_tensor_value_info("y", TensorProto.FLOAT, output_shape)]
     if num_outputs > 1:
-        outputs.append(helper.make_tensor_value_info("indices", TensorProto.INT64, output_shape))
+        outputs.append(helper.make_tensor_value_info("indices", TensorProto.INT64, [-1]))
     if num_outputs > 2:
         inverse_shape = [-1] if axis is None else input_shape
         outputs.append(helper.make_tensor_value_info("inverse_indices", TensorProto.INT64, inverse_shape))
     if num_outputs > 3:
-        outputs.append(helper.make_tensor_value_info("counts", TensorProto.INT64, output_shape))
+        outputs.append(helper.make_tensor_value_info("counts", TensorProto.INT64, [-1]))
 
     graph = helper.make_graph(
         [unique_node],
