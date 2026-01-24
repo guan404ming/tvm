@@ -43,6 +43,13 @@ std::unique_ptr<PagedPrefillFunc> ConvertPagedPrefillFunc(ffi::Array<ffi::Any> a
     return std::make_unique<FlashInferPagedPrefillFunc>(std::move(attn_func), std::move(plan_func),
                                                         attn_kind);
   }
+  if (backend_name == "webinfer") {
+    CHECK_EQ(args.size(), 3);
+    ffi::Function attn_func = args[1].cast<ffi::Function>();
+    ffi::Function plan_func = args[2].cast<ffi::Function>();
+    return std::make_unique<WebInferPagedPrefillFunc>(std::move(attn_func), std::move(plan_func),
+                                                      attn_kind);
+  }
   LOG(FATAL) << "Cannot reach here";
   throw;
 }
@@ -72,6 +79,13 @@ std::unique_ptr<RaggedPrefillFunc> ConvertRaggedPrefillFunc(ffi::Array<ffi::Any>
                                                          attn_kind, qk_head_dim_override,
                                                          v_head_dim_override);
   }
+  if (backend_name == "webinfer") {
+    CHECK_EQ(args.size(), 3);
+    ffi::Function attn_func = args[1].cast<ffi::Function>();
+    ffi::Function plan_func = args[2].cast<ffi::Function>();
+    return std::make_unique<WebInferRaggedPrefillFunc>(std::move(attn_func), std::move(plan_func),
+                                                       attn_kind);
+  }
   LOG(FATAL) << "Cannot reach here";
   throw;
 }
@@ -93,6 +107,13 @@ std::unique_ptr<PagedDecodeFunc> ConvertPagedDecodeFunc(ffi::Array<ffi::Any> arg
     ffi::Function plan_func = args[2].cast<ffi::Function>();
     return std::make_unique<FlashInferPagedDecodeFunc>(std::move(attn_func), std::move(plan_func),
                                                        attn_kind);
+  }
+  if (backend_name == "webinfer") {
+    CHECK_EQ(args.size(), 3);
+    ffi::Function attn_func = args[1].cast<ffi::Function>();
+    ffi::Function plan_func = args[2].cast<ffi::Function>();
+    return std::make_unique<WebInferPagedDecodeFunc>(std::move(attn_func), std::move(plan_func),
+                                                     attn_kind);
   }
   LOG(FATAL) << "Cannot reach here";
   throw;

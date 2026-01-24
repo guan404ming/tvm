@@ -30,11 +30,21 @@ def find_example_resource():
     index_page = os.path.join(base_path, "web", "apps", "browser", "rpc_server.html")
     default_plugin_page = os.path.join(base_path, "web", "apps", "browser", "rpc_plugin.html")
 
+    # Benchmark server HTML
+    benchmark_page = os.path.join(base_path, "web", "tests", "rpc_benchmark_server.html")
+
     resource_files = [
         ("/", os.path.join(base_path, "web", "dist", "tvmjs.bundle.js")),
         ("/", os.path.join(base_path, "web", "dist", "wasm", "tvmjs_runtime.wasi.js")),
         ("/", index_page),
+        ("/", benchmark_page),
     ]
+
+    # Add webinfer files if available
+    webinfer_path = os.path.join(base_path, "web", "node_modules", "webinfer", "dist")
+    if os.path.isdir(webinfer_path):
+        for fname in glob.glob(os.path.join(webinfer_path, "*.js")):
+            resource_files.append(("/webinfer", fname))
     allow_format = ("json", "bin", "js", "wasm", "html", "css", "model")
 
     # recursively apend things in www, up to two levels

@@ -1,6 +1,8 @@
 {
     "compilerOptions": {
-		"target": "es6",
+		"target": "es2020",
+		"module": "es2020",
+		"moduleResolution": "node",
 		"outDir": "lib",
 		"types": ["node", "@webgpu/types"],
 		"rootDir": "src",

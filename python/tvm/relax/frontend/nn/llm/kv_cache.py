@@ -485,6 +485,202 @@ class FlashInferPagedKVCache(PagedKVCache):  # pylint: disable=too-few-public-me
         )
 
 
+class WebInferPagedKVCache(PagedKVCache):  # pylint: disable=too-few-public-methods
+    """Paged KV cache using WebInfer (WebGPU) kernels.
+
+    Similar to FlashInferPagedKVCache but uses WebInfer kernels for WebGPU backend.
+    WebInfer provides high-performance attention kernels for WebGPU, following
+    the same plan/run pattern as FlashInfer.
+    """
+
+    def __init__(  # pylint: disable=too-many-locals
+        self,
+        attn_kind: Union[Literal["mha"], List[Literal["mha", "mha_sliding"]]],
+        max_batch_size: tir.Var,
+        max_total_seq_len: tir.Var,
+        prefill_chunk_size: tir.Var,
+        page_size: tir.Var,
+        support_sliding_window: tir.Var,
+        layer_partition: rx.ShapeExpr,
+        num_hidden_layers: int,
+        num_attention_heads: int,
+        num_key_value_heads: int,
+        qk_head_dim: int,
+        v_head_dim: int,
+        rope_mode: RopeMode,
+        rope_scale: int,
+        rope_theta: int,
+        rope_scaling: Dict[str, Any],
+        rope_ext_factors: rx.Expr,
+        rotary_dim: int,
+        enable_disaggregation: bool,
+        dtype: str,
+        target: Target,
+        name: str = "paged_kv_cache",
+    ) -> None:
+        """Create a paged KV cache object with WebInfer kernels.
+
+        Parameters
+        ----------
+        attn_kind : Union[Literal["mha"], List[Literal["mha", "mha_sliding"]]]
+            The attention kind. WebInfer currently only supports MHA.
+        max_batch_size : tir.Var
+            The maximum allowed batch size of the KV cache.
+            It is a symbolic variable whose concrete value is specified
+            at runtime.
+        max_total_seq_len : tir.Var
+            The maximum allowed total sequence length of the KV cache.
+            It is a symbolic variable whose concrete value is specified
+            at runtime.
+        prefill_chunk_size : tir.Var
+            The maximum total sequence length in a prefill.
+            It is a symbolic variable whose concrete value is specified
+            at runtime.
+        page_size : tir.Var
+            The size (a.k.a. number of tokens) of each page.
+            It is a symbolic variable whose concrete value is specified
+            at runtime.
+        support_sliding_window : tir.Var
+            0 or 1, denoting whether the KV cache supports sliding window.
+            It is a symbolic variable whose concrete value is specified
+            at runtime.
+        layer_partition : rx.ShapeExpr
+            The KV cache layer partition for pipeline stages.
+            It is an indptr array, denoting the starting layer of each pipeline stage.
+        rope_mode : RopeMode
+            The RoPE mode of the Paged KV cache.
+            If it is normal, RoPE will be applied to k before adding k to cache.
+            Otherwise, RoPE will be applied to q/k in attention kernel on-the-fly.
+        rope_scale : int
+            The scale of rotary position embedding.
+        rope_theta : int
+            The base of rotary position embedding.
+        rope_scaling: Dict[str, Any]
+            The RoPE scaling information dict.
+        rope_ext_factors: rx.Expr
+            The RoPE extension factors when "longrope" mode RoPE scaling is enabled.
+        rotary_dim : int
+            The number of dimensions in the embedding that RoPE is applied to.
+        enable_disaggregation : bool
+            Whether to enable disaggregation in the KV cache.
+        dtype : str
+            The data type of the KV cache.
+        target : Target
+            The target to build the model to.
+        """
+        # WebInfer currently only supports MHA, not MLA
+        attn_kind_single = attn_kind[0] if isinstance(attn_kind, List) else attn_kind
+        if attn_kind_single == "mha_sliding":
+            attn_kind_single = "mha"
+        if attn_kind_single == "mla":
+            raise ValueError("WebInfer does not support MLA attention yet.")
+
+        # Import webinfer module generation functions
+        from tvm.relax.backend.webgpu import webinfer
+
+        # Generate WebInfer modules (similar to FlashInfer pattern)
+        webinfer_prefill_mods = webinfer.gen_webinfer_prefill_module(
+            dtype=dtype,
+            num_qo_heads=num_attention_heads,
+            num_kv_heads=num_key_value_heads,
+            qk_head_dim=qk_head_dim,
+            v_head_dim=v_head_dim,
+            page_size=16,  # Default page size for WebInfer
+            enable_inline_rope=(rope_mode == RopeMode.INLINE),
+        )
+        webinfer_decode_mods = webinfer.gen_webinfer_decode_module(
+            dtype=dtype,
+            num_qo_heads=num_attention_heads,
+            num_kv_heads=num_key_value_heads,
+            qk_head_dim=qk_head_dim,
+            v_head_dim=v_head_dim,
+            page_size=16,  # Default page size for WebInfer
+            enable_inline_rope=(rope_mode == RopeMode.INLINE),
+        )
+        self.extern_mods = webinfer_prefill_mods + webinfer_decode_mods
+
+        if isinstance(attn_kind, List):
+            attn_kind = [int(getattr(AttnKind, layer_kind.upper())) for layer_kind in attn_kind]
+        else:
+            attn_kind = [int(getattr(AttnKind, attn_kind.upper())) for _ in range(num_hidden_layers)]
+
+        # fmt: off
+        # pylint: disable=line-too-long
+        bb = rx.BlockBuilder.current()
+
+        # WebInfer attention functions following the FlashInfer pattern:
+        # Tuple([backend_name, run_func, plan_func])
+        mha_functions = [
+            # Prefill with paged KV cache
+            rx.Tuple([rx.StringImm("webinfer"), rx.ExternFunc("webinfer_prefill_run"), rx.ExternFunc("webinfer_prefill_plan")]),
+            # Decode with paged KV cache
+            rx.Tuple([rx.StringImm("webinfer"), rx.ExternFunc("webinfer_decode_run"), rx.ExternFunc("webinfer_decode_plan")]),
+            # Sliding window prefill (fallback to TIR for now)
+            rx.Tuple([rx.StringImm("tir"), bb.add_func(_attention_prefill(num_key_value_heads, num_attention_heads, qk_head_dim, dtype, True, rope_scaling, target), "tir_attention_prefill_sliding_window")]),
+            # Sliding window decode (fallback to TIR for now)
+            rx.Tuple([rx.StringImm("tir"), bb.add_func(_attention_decode(num_key_value_heads, num_attention_heads, qk_head_dim, dtype, True, rope_scaling, target), "tir_attention_decode_sliding_window")]),
+            # Tree attention with paged KV cache (fallback to TIR)
+            rx.Tuple([rx.StringImm("tir"), bb.add_func(tree_attn_with_paged_kv_cache(num_key_value_heads, num_attention_heads, qk_head_dim, dtype, rope_scaling, target), "tir_attention_prefill_with_tree_mask_with_paged_kv_cache")]),
+            # Tree attention (fallback to TIR)
+            rx.Tuple([rx.StringImm("tir"), bb.add_func(tree_attn(num_key_value_heads, num_attention_heads, qk_head_dim, dtype, rope_scaling, target), "tir_attention_prefill_with_tree_mask")]),
+        ]
+
+        # Ragged prefill function
+        ragged_prefill_function = rx.Tuple([rx.StringImm("webinfer"), rx.ExternFunc("webinfer_ragged_prefill_run"), rx.ExternFunc("webinfer_ragged_prefill_plan")])
+
+        # MLA not supported for WebInfer
+        mla_function = rx.Tuple([])
+
+        # Attention merge functions
+        attn_merge_functions = [
+            bb.add_func(_merge_state_inplace(num_attention_heads, v_head_dim, dtype, target, "tir_attention_merge_state"), "tir_attention_merge_state"),
+        ]
+
+        args = [
+            rx.ShapeExpr(
+                [
+                    max_batch_size,
+                    max_total_seq_len,
+                    prefill_chunk_size,
+                    page_size,
+                    support_sliding_window,
+                ]
+            ),
+            layer_partition,
+            rx.PrimValue(num_attention_heads),
+            rx.PrimValue(num_key_value_heads),
+            rx.PrimValue(qk_head_dim),
+            rx.PrimValue(v_head_dim),
+            rx.ShapeExpr(attn_kind),
+            rx.PrimValue(enable_disaggregation),
+            rx.PrimValue(rope_mode),
+            rx.PrimValue(rope_scale),
+            rx.PrimValue(rope_theta),
+            rope_ext_factors,
+            rx.op.zeros((), dtype),
+            bb.add_func(_kv_cache_transpose_append(num_key_value_heads, qk_head_dim, dtype), "kv_cache_transpose_append"),
+            bb.add_func(_kv_cache_transpose_append_mla(qk_head_dim, dtype), "kv_cache_transpose_append_mla"),
+            ragged_prefill_function,
+            *mha_functions,
+            mla_function,
+            rx.Tuple(attn_merge_functions),
+            bb.add_func(llama_rope_with_position_map(rope_theta, rope_scale, qk_head_dim, num_attention_heads, num_key_value_heads, dtype, rope_scaling, rotary_dim), "tir_split_rotary"),
+            bb.add_func(_copy_single_page(num_key_value_heads, page_size, qk_head_dim, dtype, target), "kv_cache_copy_single_page"),
+            bb.add_func(_kv_cache_debug_get_kv(num_hidden_layers, num_key_value_heads, qk_head_dim, dtype), "kv_cache_debug_get_kv"),
+            bb.add_func(_compact_kv_copy(num_key_value_heads, qk_head_dim, dtype, target), "kv_cache_compact_kv_copy"),
+            # fmt: on
+            # pylint: enable=line-too-long
+        ]
+        super().__init__(
+            _expr=rx.call_pure_packed(
+                "vm.builtin.paged_attention_kv_cache_create",
+                *args,
+                sinfo_args=rx.ObjectStructInfo(),
+            ),
+            _name=name,
+        )
+
+
 class TIRPagedKVCache(PagedKVCache):  # pylint: disable=too-few-public-methods
     """Paged KV cache using TIR kernels."""
 

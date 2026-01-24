@@ -75,6 +75,7 @@ def create_tvmjs_wasm(output, objects, options=None, cc="emcc", libs=None):
 
     all_libs += [find_lib_path("tvmjs_support.bc")[0]]
     all_libs += [find_lib_path("webgpu_runtime.bc")[0]]
+    all_libs += [find_lib_path("webinfer_runtime.bc")[0]]
 
     if libs:
         if not isinstance(libs, list):

@@ -27,6 +27,7 @@ import { assert, StringToUint8Array, LinearCongruentialGenerator } from "./suppo
 import { Environment } from "./environment";
 import { AsyncifyHandler } from "./asyncify";
 import { FunctionInfo, WebGPUContext } from "./webgpu";
+import { initWebinferKernels, initWebinferFromSpecs } from "./webinfer";
 import {
   ArtifactCache,
   ArtifactCacheTemplate,
@@ -1897,6 +1898,102 @@ export class Instance implements Disposable {
       });
     }
     this.lib.webGPUContext = webGPUContext;
+  }
+
+  /**
+   * Initialize webinfer kernels for accelerated LLM operations.
+   * Must be called after initWebGPU.
+   *
+   * This registers optimized kernel implementations:
+   * - webinfer_gemm_float16_run / webinfer_gemm_float32_run
+   * - webinfer_rmsnorm_* (placeholder)
+   * - webinfer_rope_* (placeholder)
+   * - webinfer_attention_* (placeholder)
+   */
+  async initWebinfer(): Promise<void> {
+    if (this.lib.webGPUContext === undefined) {
+      throw new Error("WebGPU must be initialized before webinfer. Call initWebGPU first.");
+    }
+    await initWebinferKernels(
+      this.registerFunc.bind(this),
+      this.lib.webGPUContext
+    );
+  }
+
+  /**
+   * Initialize WebInfer from kernel specs embedded in the loaded module.
+   *
+   * This method reads the "webinfer_kernel_specs" attribute from the module,
+   * which contains a JSON string of kernel specifications. It then pre-compiles
+   * all the WGSL shaders and registers the kernel functions.
+   *
+   * Call this after loading a module that was compiled with WebInfer support.
+   * Must be called after initWebGPU.
+   *
+   * @param specsJson Optional JSON string of specs. If not provided, attempts
+   *                  to read from module attribute or registered function.
+   */
+  async initWebinferFromModule(specsJson?: string): Promise<void> {
+    if (this.lib.webGPUContext === undefined) {
+      throw new Error("WebGPU must be initialized before webinfer. Call initWebGPU first.");
+    }
+
+    // If specs not provided, try to get from module
+    if (!specsJson) {
+      // Try multiple ways to get kernel specs
+      const specsFuncNames = [
+        "webinfer.get_kernel_specs",  // Global function registered by webinfer module loader
+        "__webinfer_get_specs",
+        "get_kernel_specs",  // WebInfer module's function name
+      ];
+
+      for (const funcName of specsFuncNames) {
+        try {
+          // Try to get specs from the system library (with queryImports=true)
+          const sysLib = this.systemLib();
+          const getSpecs = sysLib.getFunction(funcName, true);
+          if (getSpecs) {
+            specsJson = getSpecs() as string;
+            break;
+          }
+        } catch (e) {
+          // Function not found, continue to next
+        }
+
+        // Also try as a global function
+        try {
+          this.beginScope();
+          try {
+            const getSpecs = this.getGlobalFunc(funcName);
+            if (getSpecs) {
+              const result = getSpecs();
+              if (result) {
+                specsJson = String(result);
+              }
+            }
+          } finally {
+            this.endScope();
+          }
+          if (specsJson) break;
+        } catch (e) {
+          // Function not found, continue to next
+        }
+      }
+    }
+
+    if (specsJson) {
+      await initWebinferFromSpecs(
+        this.registerFunc.bind(this),
+        this.lib.webGPUContext,
+        specsJson
+      );
+    } else {
+      // Fall back to default initialization (registers all kernels)
+      await initWebinferKernels(
+        this.registerFunc.bind(this),
+        this.lib.webGPUContext
+      );
+    }
   }
 
   /** Register all object factory */

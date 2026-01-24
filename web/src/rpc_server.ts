@@ -228,6 +228,14 @@ export class RPCServer {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const ver = Uint8ArrayToString(reader.readByteArray());
       const nargs = reader.readU32();
+
+      // If nargs is 0, this is a handshake/ping packet, wait for the real init packet
+      if (nargs === 0) {
+        this.requestBytes(SizeOf.I64);
+        this.state = RPCServerState.ReceivePacketHeader;
+        return;
+      }
+
       const args = [];
       for (let i = 0; i < nargs; ++i) {
         const typeIndex = reader.readU32();

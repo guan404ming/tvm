@@ -46,6 +46,7 @@ namespace vm {
 enum class AttnBackendKind : int {
   kTIR = 0,
   kFlashInfer = 1,
+  kWebInfer = 2,
 };
 
 /*! \brief The base class of attention backends. */
@@ -278,6 +279,52 @@ class FlashInferPagedPrefillFunc : public PagedPrefillFunc {
   std::vector<std::tuple<Tensor, Tensor, Tensor, ffi::Array<int64_t>>> cached_buffers_;
 };
 
+/*! \brief The WebInfer-based paged prefill attention function class.
+ *
+ * WebInfer is a WebGPU-based attention kernel library, similar to FlashInfer for CUDA.
+ * It follows the same plan/run pattern where plan() prepares execution metadata and
+ * run() executes the actual kernel.
+ */
+class WebInferPagedPrefillFunc : public PagedPrefillFunc {
+ public:
+  explicit WebInferPagedPrefillFunc(ffi::Function attn_func, ffi::Function plan_func,
+                                    AttnKind attn_kind)
+      : PagedPrefillFunc(std::move(attn_func), attn_kind, AttnBackendKind::kWebInfer),
+        plan_func_(std::move(plan_func)) {}
+
+  void MHA(int depth, Tensor q, Tensor qo_indptr, Tensor pages, Tensor page_indptr,
+           Tensor page_indices, Tensor length_info, Tensor q_rope_position,
+           Tensor k_rope_pos_offset, bool causal, RoPEMode rope_mode, double rotary_scale,
+           double rotary_theta, double sm_scale, Tensor attn_output, Tensor attn_lse,
+           TVMStreamHandle compute_stream) final {
+    auto& [plan_info] = cached_buffers_[depth];
+    // WebInfer run function signature:
+    // run(plan_info, q, pages, page_indptr, page_indices, qo_indptr, output, lse, sm_scale)
+    attn_func_(plan_info, q, pages, page_indptr, page_indices, qo_indptr, attn_output, attn_lse,
+               sm_scale, static_cast<int64_t>(causal));
+  }
+
+  void BeginForward(int depth, Tensor float_workspace_buffer, Tensor int_workspace_buffer,
+                    Tensor page_locked_int_workspace_buffer, HostMemoryVector* qo_indptr,
+                    HostMemoryVector* page_indptr, HostMemoryVector* last_page_len,
+                    int64_t batch_size, int64_t total_qo_len, int64_t page_size,
+                    int64_t num_qo_heads, int64_t num_kv_heads, int64_t qk_head_dim,
+                    int64_t v_head_dim, bool causal, TVMStreamHandle copy_stream) final {
+    // WebInfer plan function returns plan info (can be JSON string or structured data)
+    ffi::Any plan_info = plan_func_(batch_size, total_qo_len, page_size, num_qo_heads, num_kv_heads,
+                                    qk_head_dim, v_head_dim, causal);
+
+    if (cached_buffers_.size() <= static_cast<size_t>(depth)) {
+      cached_buffers_.resize(depth + 1);
+    }
+    cached_buffers_[depth] = std::make_tuple(std::move(plan_info));
+  }
+
+ private:
+  ffi::Function plan_func_;
+  std::vector<std::tuple<ffi::Any>> cached_buffers_;
+};
+
 /*! \brief The ragged prefill attention function base class. */
 class RaggedPrefillFunc : public AttnBackendFunc {
  public:
@@ -390,6 +437,41 @@ class FlashInferRaggedPrefillFunc : public RaggedPrefillFunc {
   Tensor int_workspace_buffer_;
   Tensor page_locked_int_workspace_buffer_;
   ffi::Array<int64_t> plan_info_vec_;
+};
+
+/*! \brief The WebInfer-based ragged prefill attention function class.
+ *
+ * WebInfer is a WebGPU-based attention kernel library for ragged (non-paged) prefill.
+ */
+class WebInferRaggedPrefillFunc : public RaggedPrefillFunc {
+ public:
+  explicit WebInferRaggedPrefillFunc(ffi::Function attn_func, ffi::Function plan_func,
+                                     AttnKind attn_kind)
+      : RaggedPrefillFunc(std::move(attn_func), attn_kind, AttnBackendKind::kWebInfer),
+        plan_func_(std::move(plan_func)) {}
+
+  void MHA(Tensor q, Tensor k, Tensor v, Tensor qo_indptr, Tensor kv_indptr, Tensor q_rope_position,
+           Tensor k_rope_pos_offset, bool causal, RoPEMode rope_mode, double rotary_scale,
+           double rotary_theta, double sm_scale, Tensor attn_output, Tensor attn_lse,
+           TVMStreamHandle compute_stream) final {
+    // WebInfer ragged prefill run function
+    attn_func_(plan_info_, q, k, v, qo_indptr, kv_indptr, attn_output, attn_lse, sm_scale,
+               static_cast<int64_t>(causal));
+  }
+
+  void BeginForward(Tensor float_workspace_buffer, Tensor int_workspace_buffer,
+                    Tensor page_locked_int_workspace_buffer, HostMemoryVector* qo_indptr,
+                    HostMemoryVector* kv_indptr, int64_t batch_size, int64_t total_qo_len,
+                    int64_t num_qo_heads, int64_t num_kv_heads, int64_t qk_head_dim,
+                    int64_t v_head_dim, bool causal, TVMStreamHandle copy_stream) final {
+    // WebInfer ragged prefill plan function
+    plan_info_ = plan_func_(batch_size, total_qo_len, num_qo_heads, num_kv_heads, qk_head_dim,
+                            v_head_dim, causal);
+  }
+
+ private:
+  ffi::Function plan_func_;
+  ffi::Any plan_info_;
 };
 
 /*! \brief The paged decode attention function base class. */
@@ -517,6 +599,48 @@ class FlashInferPagedDecodeFunc : public PagedDecodeFunc {
  private:
   ffi::Function plan_func_;
   std::vector<std::tuple<Tensor, Tensor, Tensor, ffi::Array<int64_t>>> cached_buffers_;
+};
+
+/*! \brief The WebInfer-based paged decode attention function class.
+ *
+ * WebInfer is a WebGPU-based attention kernel library, similar to FlashInfer for CUDA.
+ * It follows the same plan/run pattern for decode attention.
+ */
+class WebInferPagedDecodeFunc : public PagedDecodeFunc {
+ public:
+  explicit WebInferPagedDecodeFunc(ffi::Function attn_func, ffi::Function plan_func,
+                                   AttnKind attn_kind)
+      : PagedDecodeFunc(std::move(attn_func), attn_kind, AttnBackendKind::kWebInfer),
+        plan_func_(std::move(plan_func)) {}
+
+  void MHA(int depth, Tensor q, Tensor pages, Tensor page_indptr, Tensor page_indices,
+           Tensor length_info, Tensor k_rope_pos_offset, Tensor q_rope_position, RoPEMode rope_mode,
+           double rotary_scale, double rotary_theta, double sm_scale, Tensor attn_output,
+           Tensor attn_lse, TVMStreamHandle compute_stream) final {
+    auto& [plan_info] = cached_buffers_[depth];
+    // WebInfer decode run function
+    attn_func_(plan_info, q, pages, page_indptr, page_indices, attn_output, attn_lse, sm_scale);
+  }
+
+  void BeginForward(int depth, Tensor float_workspace_buffer, Tensor int_workspace_buffer,
+                    Tensor page_locked_int_workspace_buffer, HostMemoryVector* page_indptr,
+                    int64_t batch_size, int64_t page_size, int64_t num_qo_heads,
+                    int64_t num_kv_heads, int64_t qk_head_dim, int64_t v_head_dim,
+                    RoPEMode rope_mode, DataType q_dtype, DataType kv_dtype,
+                    TVMStreamHandle copy_stream) final {
+    // WebInfer decode plan function
+    ffi::Any plan_info =
+        plan_func_(batch_size, page_size, num_qo_heads, num_kv_heads, qk_head_dim, v_head_dim);
+
+    if (cached_buffers_.size() <= static_cast<size_t>(depth)) {
+      cached_buffers_.resize(depth + 1);
+    }
+    cached_buffers_[depth] = std::make_tuple(std::move(plan_info));
+  }
+
+ private:
+  ffi::Function plan_func_;
+  std::vector<std::tuple<ffi::Any>> cached_buffers_;
 };
 
 /*! \brief The paged prefill with tree mask attention function base class. */

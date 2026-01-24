@@ -40,7 +40,7 @@ dist/wasm/%.bc: emcc/%.cc
 	$(EMCC) $(EMCC_CFLAGS) -emit-llvm -c -o dist/wasm/$*.bc $<
 
 
-dist/wasm/tvmjs_runtime.wasm: dist/wasm/wasm_runtime.bc dist/wasm/tvmjs_support.bc dist/wasm/webgpu_runtime.bc
+dist/wasm/tvmjs_runtime.wasm: dist/wasm/wasm_runtime.bc dist/wasm/tvmjs_support.bc dist/wasm/webgpu_runtime.bc dist/wasm/webinfer_runtime.bc
 	@mkdir -p $(@D)
 	$(EMCC) $(EMCC_CFLAGS) -o dist/wasm/tvmjs_runtime.js $+ $(EMCC_LDFLAGS)
 

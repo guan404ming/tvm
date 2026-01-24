@@ -20,13 +20,18 @@
 import { LibraryProvider } from "./types";
 import EmccWASI from "./tvmjs_runtime_wasi";
 
+// Dynamic require that bundlers won't analyze/hoist
+// This prevents rollup from converting conditional requires to static imports
+const dynamicRequire = typeof require !== "undefined" ? require : null;
+
 /**
  * Get performance measurement.
  */
 export function getPerformance(): Performance {
   if (typeof performance === "undefined") {
+    // Node.js environment - use perf_hooks
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const performanceNode = require("perf_hooks");
+    const performanceNode = dynamicRequire!("perf_hooks");
     return performanceNode.performance as Performance;
   } else {
     return performance as Performance;
@@ -39,9 +44,10 @@ export function getPerformance(): Performance {
  */
 export function createWebSocket(url: string): WebSocket {
   if (typeof WebSocket === "undefined") {
+    // Node.js environment - use ws package
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const WebSocket = require("ws");
-    return new WebSocket(url);
+    const WS = dynamicRequire!("ws");
+    return new WS(url);
   } else {
     return new (WebSocket as any)(url);
   }

@@ -34,5 +34,6 @@ export {
 export { Disposable, LibraryProvider } from "./types";
 export { RPCServer } from "./rpc_server";
 export { assert, wasmPath, LinearCongruentialGenerator } from "./support";
-export { detectGPUDevice, GPUDeviceDetectOutput } from "./webgpu";
+export { detectGPUDevice, GPUDeviceDetectOutput, WebGPUContext } from "./webgpu";
 export { createPolyfillWASI } from "./compact";
+export { initWebinferKernels, isWebinferAvailable, getWebinferContext } from "./webinfer";

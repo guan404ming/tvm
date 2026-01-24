@@ -922,6 +922,17 @@ export class WebGPUContext {
     return buffer;
   }
 
+  /**
+   * Get GPUBuffer from a pointer.
+   * This is used by external integrations like webinfer to access GPU buffers.
+   *
+   * @param ptr The buffer pointer (index into bufferTable)
+   * @returns The corresponding GPUBuffer
+   */
+  getBufferFromPtr(ptr: GPUPointer): GPUBuffer {
+    return this.gpuBufferFromPtr(ptr);
+  }
+
   private attachToBufferTable(buffer: GPUBuffer): GPUPointer {
     if (this.bufferTableFreeId.length != 0) {
       const idx = this.bufferTableFreeId.pop() as number;
